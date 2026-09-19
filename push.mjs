@@ -66,6 +66,13 @@ function safeStem(name) {
 
 if (!existsSync(picsDir)) mkdirSync(picsDir);
 
+function nextSeq() {
+  const nums = readdirSync(picsDir)
+    .map((f) => parseInt(f.match(/^(\d+)-/)?.[1] ?? "0", 10))
+    .filter((n) => !Number.isNaN(n) && n > 0);
+  return (nums.length ? Math.max(...nums) : 0) + 1;
+}
+
 const args = process.argv.slice(2);
 const added = [];
 const removed = [];
@@ -81,6 +88,8 @@ if (args[0] === "--rm") {
       console.error(`不存在: pics/${basename(name)}`);
     }
   }
+} else if (args[0] === "--sync") {
+  console.log("sync: 仅刷新列表并推送");
 } else {
   const pass = loadPass();
   for (const src of args) {
@@ -89,16 +98,17 @@ if (args[0] === "--rm") {
       continue;
     }
     const ext = extname(src).toLowerCase() || ".bin";
-    let name = `${stamp}-${safeStem(src)}${ext}.enc`;
+    const seq = String(nextSeq()).padStart(3, "0");
+    let name = `${seq}-${stamp}-${safeStem(src)}${ext}.enc`;
     let n = 1;
     while (existsSync(join(picsDir, name))) {
-      name = `${stamp}-${n}-${safeStem(src)}${ext}.enc`;
+      name = `${seq}-${stamp}-${safeStem(src)}-${n}${ext}.enc`;
       n += 1;
     }
     const out = await encryptFile(pass, src);
     writeFileSync(join(picsDir, name), out);
     added.push(name);
-    console.log(`encrypted -> pics/${name}`);
+    console.log(`encrypted -> pics/${name}(第 ${parseInt(seq, 10)} 张)`);
   }
 }
 
@@ -114,13 +124,17 @@ if (startIdx < 0 || endIdx < 0) {
 } else {
   const images = readdirSync(picsDir)
     .filter((f) => /\.enc$/i.test(f))
-    .sort()
-    .reverse();
+    .sort((a, b) => {
+      const na = parseInt(a.match(/^(\d+)-/)?.[1] ?? "0", 10);
+      const nb = parseInt(b.match(/^(\d+)-/)?.[1] ?? "0", 10);
+      return nb - na; // 最新(号最大)在最上面
+    });
   const list = images.length
-    ? `<ul style="list-style:none;padding:0">\n${images
+    ? `<ul>\n${images
         .map((f) => {
-          const display = f.replace(/\.enc$/i, "");
-          return `      <li data-file="pics/${f}" style="margin:6px 0;font-size:14px">🔒 ${display}</li>`;
+          const seq = parseInt(f.match(/^(\d+)-/)?.[1] ?? "0", 10);
+          const display = f.replace(/^\d+-/, "").replace(/\.enc$/i, "");
+          return `      <li data-file="pics/${f}" style="margin:6px 0;font-size:14px">🔒 第${seq}张 · ${display}</li>`;
         })
         .join("\n")}\n    </ul>`
     : `    <p class="empty">暂无图片</p>`;
