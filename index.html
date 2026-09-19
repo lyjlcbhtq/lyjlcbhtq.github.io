@@ -7,15 +7,21 @@
 <style>
   :root { color-scheme: dark; }
   body { margin: 0; font-family: system-ui, sans-serif; background: #16181d; color: #e8eaf0; }
-  main { max-width: 560px; margin: 0 auto; padding: 24px 16px 48px; }
+  main { max-width: 640px; margin: 0 auto; padding: 24px 16px 48px; }
   h1 { font-size: 22px; margin: 8px 0 4px; }
   p.sub { margin: 0 0 24px; color: #9aa3b2; font-size: 14px; }
   section { background: #1e2128; border: 1px solid #2c313a; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
   h2 { font-size: 16px; margin: 0 0 12px; color: #aab4c8; }
   a { color: #6ea8fe; text-decoration: none; word-break: break-all; }
   a:hover { text-decoration: underline; }
-  ul { margin: 0; padding-left: 20px; }
-  li { margin: 6px 0; font-size: 15px; }
+  .lockrow { display: flex; gap: 8px; }
+  input[type="password"] { flex: 1; background: #12141a; color: #e8eaf0; border: 1px solid #2c313a; border-radius: 8px; padding: 10px 12px; font-size: 16px; }
+  button { background: #2f6fed; color: #fff; border: 0; border-radius: 8px; padding: 10px 18px; font-size: 15px; cursor: pointer; }
+  #status { margin: 10px 0 0; font-size: 13px; color: #9aa3b2; min-height: 1.2em; }
+  #status.err { color: #ff7b72; }
+  figure { margin: 0 0 18px; }
+  figure img { max-width: 100%; border-radius: 8px; border: 1px solid #2c313a; display: block; }
+  figcaption { font-size: 12px; color: #9aa3b2; margin-top: 4px; word-break: break-all; }
   .empty { color: #9aa3b2; font-size: 14px; }
   footer { color: #6b7280; font-size: 12px; margin-top: 28px; text-align: center; }
 </style>
@@ -23,7 +29,17 @@
 <body>
 <main>
   <h1>中转站 · Hub</h1>
-  <p class="sub">电脑与手机互通的静态中转页(由电脑端自动推送更新)</p>
+  <p class="sub">电脑与手机互通的静态中转页(图片以加密形式存放,解锁后在本机解密显示)</p>
+
+  <section>
+    <h2>图片(已加密)</h2>
+    <div class="lockrow" id="lockrow">
+      <input type="password" id="pass" placeholder="输入查看密码" autocomplete="current-password" />
+      <button id="unlock">解锁</button>
+    </div>
+    <p id="status"></p>
+    <div id="list"><p class="empty">解锁后显示图片</p></div>
+  </section>
 
   <section>
     <h2>应用</h2>
@@ -32,16 +48,114 @@
     </ul>
   </section>
 
-  <section>
-    <h2>图片</h2>
-    <!-- pics-start:此区块由电脑端推送脚本自动维护 -->
-    <ul>
-      <li><a href="pics/20260919-desktop.png">20260919-desktop.png</a> <span class="empty">- 桌面截图测试图</span></li>
-    </ul>
-    <!-- pics-end -->
-  </section>
-
-  <footer>数据经 GitHub Pages 分发 · 公开仓库,请勿放置涉密内容</footer>
+  <footer>图片经 AES-256-GCM 加密存放于公开仓库,解密仅发生在访问者本机 · 请勿放置涉密内容</footer>
 </main>
+<script>
+(function () {
+  var MAGIC = "SBHUB1";
+  var ITER = 310000;
+  var passBox = document.getElementById("pass");
+  var statusEl = document.getElementById("status");
+  var listEl = document.getElementById("list");
+  var items = Array.prototype.slice.call(document.querySelectorAll("[data-file]"));
+
+  function deriveKey(pass, saltBytes) {
+    var enc = new TextEncoder();
+    return crypto.subtle
+      .importKey("raw", enc.encode(pass), "PBKDF2", false, ["deriveKey"])
+      .then(function (km) {
+        return crypto.subtle.deriveKey(
+          { name: "PBKDF2", salt: saltBytes, iterations: ITER, hash: "SHA-256" },
+          km,
+          { name: "AES-GCM", length: 256 },
+          false,
+          ["decrypt"]
+        );
+      });
+  }
+
+  function decryptFile(pass, buf) {
+    var raw = new Uint8Array(buf);
+    var magic = new TextDecoder().decode(raw.slice(0, 6));
+    if (magic !== MAGIC) return Promise.reject(new Error("not an encrypted hub file"));
+    var salt = raw.slice(6, 22);
+    var iv = raw.slice(22, 34);
+    var data = raw.slice(34);
+    return deriveKey(pass, salt).then(function (key) {
+      return crypto.subtle.decrypt({ name: "AES-GCM", iv: iv }, key, data);
+    });
+  }
+
+  function render(fileName, plainBuf) {
+    var ext = fileName.replace(/\.enc$/i, "").split(".").pop().toLowerCase();
+    var type = ext === "jpg" ? "image/jpeg" : "image/" + ext;
+    var url = URL.createObjectURL(new Blob([plainBuf], { type: type }));
+    var fig = document.createElement("figure");
+    var img = document.createElement("img");
+    img.src = url;
+    img.alt = fileName;
+    var cap = document.createElement("figcaption");
+    cap.textContent = fileName.replace(/\.enc$/i, "");
+    fig.appendChild(img);
+    fig.appendChild(cap);
+    listEl.appendChild(fig);
+  }
+
+  function unlock() {
+    var pass = passBox.value;
+    if (!pass) return;
+    statusEl.className = "";
+    statusEl.textContent = "解密中…";
+    listEl.innerHTML = "";
+    if (items.length === 0) {
+      statusEl.textContent = "暂无图片";
+      return;
+    }
+    var ok = 0, fail = 0;
+    function finish() {
+      var shown = listEl.querySelectorAll("figure").length;
+      if (shown === 0) {
+        statusEl.className = "err";
+        statusEl.textContent = "解锁失败:密码不对或图片缺失";
+      } else {
+        statusEl.textContent = "已解锁 " + shown + " 张";
+        try { sessionStorage.setItem("hubpass", pass); } catch (e) {}
+      }
+    }
+    items.forEach(function (el) {
+      var file = el.getAttribute("data-file");
+      fetch(file, { cache: "no-store" })
+        .then(function (r) {
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          return r.arrayBuffer();
+        })
+        .then(function (buf) {
+          return decryptFile(pass, buf);
+        })
+        .then(function (plain) {
+          render(file, plain);
+          ok += 1;
+          if (ok + fail === items.length) finish();
+        })
+        .catch(function () {
+          fail += 1;
+          if (ok + fail === items.length) finish();
+        });
+    });
+  }
+
+  document.getElementById("unlock").addEventListener("click", unlock);
+  passBox.addEventListener("keydown", function (e) {
+    if (e.key === "Enter") unlock();
+  });
+  try {
+    var saved = sessionStorage.getItem("hubpass");
+    if (saved) {
+      passBox.value = saved;
+      unlock();
+    }
+  } catch (e) {}
+})();
+</script>
 </body>
 </html>
